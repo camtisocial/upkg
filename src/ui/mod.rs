@@ -6,7 +6,12 @@ pub fn draw_ui() {
             println!("----- upkg -----");
             println!("Total Installed Packages: {}", stats.total_installed);
             println!("Total Upgradable Packages: {}", stats.total_upgradable);
-            println!("Days Since Last Update: {}", stats.days_since_last_update);
+
+            if let Some(seconds) = stats.days_since_last_update {
+                println!("Time Since Last Update: {}", core::normalize_duration(seconds));
+            } else {
+                println!("Time Since Last Update: Unknown");
+            }
 
             if let Some(download) = stats.download_size_mb {
                 println!("Total Download Size: {:.2} MiB", download);
