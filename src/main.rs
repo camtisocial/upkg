@@ -1,7 +1,6 @@
 mod core;
-mod ui;
 mod managers;
-
+mod ui;
 
 fn main() {
     ui::draw_ui();

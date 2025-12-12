@@ -1,6 +1,6 @@
-use crate::managers::{DummyManager, ManagerStats, PackageManager};
+use crate::managers::{ManagerStats, PackageManager, pacman::FetchPacmanStats};
 
 pub fn get_manager_stats() -> ManagerStats {
-    let backend = DummyManager;
+    let backend = FetchPacmanStats;
     backend.get_stats()
 }
