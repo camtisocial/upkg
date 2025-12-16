@@ -1,5 +1,6 @@
 pub mod pacman;
 
+#[derive(Debug)]
 pub struct ManagerStats {
     pub total_installed: u32,
     pub total_upgradable: u32,
@@ -20,6 +21,7 @@ pub trait PackageManager {
     fn test_mirror_health(&self) -> Option<MirrorHealth>;
 }
 
+#[derive(Debug)]
 pub struct MirrorHealth {
     pub url: String,
     pub speed_mbps: Option<f64>,
