@@ -9,3 +9,4 @@ crossterm = "0.27"
 chrono = "0.4"
 regex = "1.10"
 alpm = "4"
+reqwest = { version = "0.12", features = ["blocking"] }

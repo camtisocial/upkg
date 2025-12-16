@@ -15,17 +15,15 @@ fn main() {
 
     println!();
 
-    // FAST operations first - gather all local stats
+    // local stat gathering and display
     println!("[1/2] Gathering local stats...");
     let stats = core::get_manager_stats();
-
-    // Display stats immediately
     ui::display_stats(&stats);
 
     // SLOW operations - network requests
     // In the future, this will run in a background thread
     // and update the UI with a progress bar
-    println!("\n[2/2] Testing mirror health (slow)...");
+    println!("\n[2/2] Testing mirror health...");
     let mirror = core::test_mirror_health();
-    ui::display_mirror_health(&mirror);
+    ui::display_mirror_health(&mirror, stats.download_size_mb);
 }

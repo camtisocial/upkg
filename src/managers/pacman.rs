@@ -3,6 +3,7 @@ use alpm::Alpm;
 use chrono::{DateTime, FixedOffset, Local};
 use std::fs;
 use std::process::Command;
+use std::time::Instant;
 
 pub struct FetchPacmanStats;
 
@@ -238,6 +239,82 @@ impl FetchPacmanStats {
         }
     }
 
+    /// Parse /etc/pacman.d/mirrorlist to find the first active mirror
+    /// Returns the mirror URL (without the $repo/$arch suffix)
+    fn get_mirror_url(&self) -> Option<String> {
+        let mirrorlist = fs::read_to_string("/etc/pacman.d/mirrorlist").ok()?;
+
+        for line in mirrorlist.lines() {
+            let trimmed = line.trim();
+            // Look for uncommented Server lines
+            if trimmed.starts_with("Server = ") {
+                let url = trimmed.strip_prefix("Server = ")?;
+                // Remove $repo and $arch variables to get base URL
+                // Example: https://mirror.example.com/$repo/os/$arch
+                // -> https://mirror.example.com
+                let base_url = url.split("/$repo").next()?;
+                return Some(base_url.to_string());
+            }
+        }
+        None
+    }
+
+    /// test download speed with test file (extra.files)
+    fn test_mirror_speed(&self, mirror_url: &str) -> Option<f64> {
+        let test_url = format!("{}/extra/os/x86_64/extra.files", mirror_url);
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .ok()?;
+
+        let start = Instant::now();
+        let response = client.get(&test_url).send().ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        let bytes = response.bytes().ok()?;
+        let duration = start.elapsed();
+
+        let bytes_downloaded = bytes.len() as f64;
+        let seconds = duration.as_secs_f64();
+
+        if seconds > 0.0 {
+            // Convert to MB/s
+            Some(bytes_downloaded / seconds / 1_048_576.0)
+        } else {
+            None
+        }
+    }
+
+    /// Check the lastsync
+    fn check_mirror_sync(&self, mirror_url: &str) -> Option<f64> {
+        let lastsync_url = format!("{}/lastsync", mirror_url);
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .ok()?;
+
+        let response = client.get(&lastsync_url).send().ok()?;
+
+        if !response.status().is_success() {
+            return None;
+        }
+
+        let timestamp_str = response.text().ok()?;
+        let timestamp: i64 = timestamp_str.trim().parse().ok()?;
+
+        // Convert Unix timestamp to hours ago
+        let now = Local::now().timestamp();
+        let age_seconds = now - timestamp;
+        let age_hours = age_seconds as f64 / 3600.0;
+
+        Some(age_hours.max(0.0))
+    }
+
 }
 
 impl PackageManager for FetchPacmanStats {
@@ -259,15 +336,14 @@ impl PackageManager for FetchPacmanStats {
     }
 
     fn test_mirror_health(&self) -> Option<MirrorHealth> {
-        // test 
-        println!("[Mirror test: sleeping ...zzz]");
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        println!("[Mirror test: Complete]");
+        let mirror_url = self.get_mirror_url()?;
+        let speed = self.test_mirror_speed(&mirror_url);
+        let sync_age = self.check_mirror_sync(&mirror_url);
 
         Some(MirrorHealth {
-            url: "mirror.example.com".to_string(),
-            speed_mbps: Some(15.2),
-            sync_age_hours: Some(2.5),
+            url: mirror_url,
+            speed_mbps: speed,
+            sync_age_hours: sync_age,
         })
     }
 }

@@ -39,13 +39,27 @@ pub fn display_stats(stats: &ManagerStats) {
     }
 }
 
-pub fn display_mirror_health(mirror: &Option<MirrorHealth>) {
+pub fn display_mirror_health(mirror: &Option<MirrorHealth>, download_size_mb: Option<f64>) {
     if let Some(m) = mirror {
         println!("----- Mirror Health -----");
         println!("Mirror: {}", m.url);
 
         if let Some(speed) = m.speed_mbps {
             println!("Speed: {:.1} MB/s", speed);
+
+            if let Some(size) = download_size_mb {
+                if size > 0.0 {
+                    let eta_seconds = size / speed;
+                    let eta_display = if eta_seconds < 60.0 {
+                        format!("{:.0}s", eta_seconds)
+                    } else if eta_seconds < 3600.0 {
+                        format!("{:.0}m {:.0}s", eta_seconds / 60.0, eta_seconds % 60.0)
+                    } else {
+                        format!("{:.0}h {:.0}m", eta_seconds / 3600.0, (eta_seconds % 3600.0) / 60.0)
+                    };
+                    println!("Estimated Download Time: {}", eta_display);
+                }
+            }
         }
 
         if let Some(age) = m.sync_age_hours {
