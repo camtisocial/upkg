@@ -1,13 +1,10 @@
 use crate::core;
 use crate::managers::{ManagerStats, MirrorHealth};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::{io, thread, time::Duration};
 use termimad::crossterm::style::Color::*;
-use termimad::{Alignment, MadSkin, rgb};
+use termimad::{MadSkin, rgb};
 
-fn get_spinner(frame: usize) -> char {
-    let spinners = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
-    spinners[frame % spinners.len()]
-}
 pub fn display_stats(stats: &ManagerStats) {
     println!("----- upkg -----");
     println!("Total Installed Packages: {}", stats.total_installed);
@@ -85,56 +82,114 @@ pub fn display_mirror_health(mirror: &Option<MirrorHealth>, stats: &ManagerStats
     }
 }
 
-
-pub fn display_stats_with_graphics(
-    _stats: &ManagerStats,
-    _mirror: &Option<MirrorHealth>,) -> io::Result<()> {
-    // styling
+pub fn display_stats_with_graphics( stats: &ManagerStats, _mirror: &Option<MirrorHealth>,) -> io::Result<()> {
     let mut skin = MadSkin::default();
     skin.set_headers_fg(rgb(255, 187, 0));
     skin.bold.set_fg(Yellow);
     skin.italic.set_fg(Cyan);
-    skin.table.align = Alignment::Center;
 
-    let mut frame = 0;
-    let start_time = std::time::Instant::now();
+    // Format stats
+    let last_update = stats
+        .days_since_last_update
+        .map(|s| core::normalize_duration(s))
+        .unwrap_or_else(|| "Unknown".to_string());
 
-    loop {
-        // Clear screen
-        print!("\x1B[2J\x1B[1;1H");
+    let download_size = stats
+        .download_size_mb
+        .map(|s| format!("{:.2} MiB", s))
+        .unwrap_or_else(|| "-".to_string());
 
-        let p1 = std::cmp::min((start_time.elapsed().as_secs() * 20) as u64, 100);
+    let installed_size = stats
+        .total_installed_size_mb
+        .map(|s| format!("{:.2} MiB", s))
+        .unwrap_or_else(|| "-".to_string());
 
-        let status1 = if p1 >= 100 {
-            "✓ Done"
+    let net_upgrade = stats
+        .net_upgrade_size_mb
+        .map(|s| format!("{:.2} MiB", s))
+        .unwrap_or_else(|| "-".to_string());
+
+    let orphaned = if let Some(count) = stats.orphaned_packages {
+        if let Some(size) = stats.orphaned_size_mb {
+            format!("{} ({:.2} MiB)", count, size)
         } else {
-            &format!("{} Downloading", get_spinner(frame))
-        };
+            count.to_string()
+        }
+    } else {
+        "-".to_string()
+    };
 
-        let table = format!(
-            r#"
-# upkg
+    let cache = stats
+        .cache_size_mb
+        .map(|s| format!("{:.2} MiB", s))
+        .unwrap_or_else(|| "-".to_string());
 
-|-:|:-:|
-|*Installed*|*test*|
-|-:|:-:|
-| *{}* | {}%
-|-
+    // Print non network stats once
+    let content = format!(
+        r#"
 
+**{:<20}** {}
+**{:<20}** {}
+**{:<20}** {}
+**{:<20}** {}
+**{:<20}** {}
+**{:<20}** {}
+**{:<20}** {}
+**{:<20}** {}
 "#,
-            status1,
-            p1
-        );
+        "Installed:",
+        stats.total_installed,
+        "Upgradable:",
+        stats.total_upgradable,
+        "Last System Update:",
+        last_update,
+        "Download Size:",
+        download_size,
+        "Installed Size:",
+        installed_size,
+        "Net Upgrade Size:",
+        net_upgrade,
+        "Orphaned Packages:",
+        orphaned,
+        "Package Cache:",
+        cache
+    );
 
-        println!("{}", skin.term_text(&table));
+    let width = 80;
+    println!("{}", skin.text(&content, Some(width)));
 
-        if p1 >= 100 {
-            println!("\n✓ finished\n");
+    // progress bar with spinner
+    let pb = ProgressBar::new(100);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.cyan} {msg} {bar:20.cyan/blue} {pos}%")
+            .expect("Failed to create progress bar template")
+            .progress_chars("━━╸")
+            .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]),
+    );
+
+    // tester progress info
+    let start_time = std::time::Instant::now();
+    loop {
+        let progress = std::cmp::min((start_time.elapsed().as_secs() * 20) as u64, 100);
+
+        if progress >= 100 {
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{msg} {bar:20.cyan/blue} {pos}%")
+                    .expect("Failed to create final template")
+                    .progress_chars("━━━━━━━━━━━━━━━━━━━━"),
+            );
+            pb.finish_with_message("✓ Done");
             break;
+        } else {
+            pb.set_message("Downloading");
+            pb.set_position(progress);
         }
 
-        frame += 1;
         thread::sleep(Duration::from_millis(100));
     }
+
+    println!();
     Ok(())
 }
