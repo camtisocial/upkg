@@ -1,10 +1,13 @@
 use crate::core;
 use crate::managers::{ManagerStats, MirrorHealth};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::{io, thread, time::Duration};
 use termimad::crossterm::style::Color::*;
 use termimad::{Alignment, MadSkin, rgb};
 
+fn get_spinner(frame: usize) -> char {
+    let spinners = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'];
+    spinners[frame % spinners.len()]
+}
 pub fn display_stats(stats: &ManagerStats) {
     println!("----- upkg -----");
     println!("Total Installed Packages: {}", stats.total_installed);
@@ -86,21 +89,27 @@ pub fn display_mirror_health(mirror: &Option<MirrorHealth>, stats: &ManagerStats
 pub fn display_stats_with_graphics(
     _stats: &ManagerStats,
     _mirror: &Option<MirrorHealth>,) -> io::Result<()> {
-    // Create progress tracking
-    let multi = MultiProgress::new();
-
-    let pb1 = multi.add(ProgressBar::new(100));
-
-    pb1.set_style(ProgressStyle::default_bar().template("{msg}").unwrap());
-
-
+    // styling
     let mut skin = MadSkin::default();
     skin.set_headers_fg(rgb(255, 187, 0));
     skin.bold.set_fg(Yellow);
     skin.italic.set_fg(Cyan);
     skin.table.align = Alignment::Center;
 
+    let mut frame = 0;
+    let start_time = std::time::Instant::now();
 
+    loop {
+        // Clear screen
+        print!("\x1B[2J\x1B[1;1H");
+
+        let p1 = std::cmp::min((start_time.elapsed().as_secs() * 20) as u64, 100);
+
+        let status1 = if p1 >= 100 {
+            "✓ Done"
+        } else {
+            &format!("{} Downloading", get_spinner(frame))
+        };
 
         let table = format!(
             r#"
@@ -108,13 +117,24 @@ pub fn display_stats_with_graphics(
 
 |-:|:-:|
 |*Installed*|*test*|
+|-:|:-:|
+| *{}* | {}%
 |-
 
 "#,
-            // status1,
+            status1,
+            p1
         );
 
         println!("{}", skin.term_text(&table));
 
+        if p1 >= 100 {
+            println!("\n✓ finished\n");
+            break;
+        }
+
+        frame += 1;
+        thread::sleep(Duration::from_millis(100));
+    }
     Ok(())
 }
