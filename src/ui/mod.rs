@@ -1,6 +1,9 @@
 use crate::core;
 use crate::managers::{ManagerStats, MirrorHealth};
-use std::io;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::{io, thread, time::Duration};
+use termimad::crossterm::style::Color::*;
+use termimad::{Alignment, MadSkin, rgb};
 
 pub fn display_stats(stats: &ManagerStats) {
     println!("----- upkg -----");
@@ -8,7 +11,10 @@ pub fn display_stats(stats: &ManagerStats) {
     println!("Total Upgradable Packages: {}", stats.total_upgradable);
 
     if let Some(seconds) = stats.days_since_last_update {
-        println!("Time Since Last Update: {}", core::normalize_duration(seconds));
+        println!(
+            "Time Since Last Update: {}",
+            core::normalize_duration(seconds)
+        );
     } else {
         println!("Time Since Last Update: Unknown");
     }
@@ -28,7 +34,10 @@ pub fn display_stats(stats: &ManagerStats) {
     if let Some(orphaned) = stats.orphaned_packages {
         if orphaned > 0 {
             if let Some(size) = stats.orphaned_size_mb {
-                println!("Orphaned Packages: {} ({:.2} MiB reclaimable)", orphaned, size);
+                println!(
+                    "Orphaned Packages: {} ({:.2} MiB reclaimable)",
+                    orphaned, size
+                );
             } else {
                 println!("Orphaned Packages: {}", orphaned);
             }
@@ -56,7 +65,11 @@ pub fn display_mirror_health(mirror: &Option<MirrorHealth>, stats: &ManagerStats
                     } else if eta_seconds < 3600.0 {
                         format!("{:.0}m {:.0}s", eta_seconds / 60.0, eta_seconds % 60.0)
                     } else {
-                        format!("{:.0}h {:.0}m", eta_seconds / 3600.0, (eta_seconds % 3600.0) / 60.0)
+                        format!(
+                            "{:.0}h {:.0}m",
+                            eta_seconds / 3600.0,
+                            (eta_seconds % 3600.0) / 60.0
+                        )
                     };
                     println!("Estimated Download Time: {}", eta_display);
                 }
@@ -69,7 +82,39 @@ pub fn display_mirror_health(mirror: &Option<MirrorHealth>, stats: &ManagerStats
     }
 }
 
-pub fn display_stats_with_graphics(_stats: &ManagerStats, _mirror: &Option<MirrorHealth>) -> io::Result<()> {
-    println!("test");
+
+pub fn display_stats_with_graphics(
+    _stats: &ManagerStats,
+    _mirror: &Option<MirrorHealth>,) -> io::Result<()> {
+    // Create progress tracking
+    let multi = MultiProgress::new();
+
+    let pb1 = multi.add(ProgressBar::new(100));
+
+    pb1.set_style(ProgressStyle::default_bar().template("{msg}").unwrap());
+
+
+    let mut skin = MadSkin::default();
+    skin.set_headers_fg(rgb(255, 187, 0));
+    skin.bold.set_fg(Yellow);
+    skin.italic.set_fg(Cyan);
+    skin.table.align = Alignment::Center;
+
+
+
+        let table = format!(
+            r#"
+# upkg
+
+|-:|:-:|
+|*Installed*|*test*|
+|-
+
+"#,
+            // status1,
+        );
+
+        println!("{}", skin.term_text(&table));
+
     Ok(())
 }
