@@ -13,6 +13,7 @@ pub struct ManagerStats {
     pub cache_size_mb: Option<f64>,
     pub mirror_url: Option<String>,
     pub mirror_sync_age_hours: Option<f64>,
+    pub pacman_version: Option<String>,
 }
 
 pub trait PackageManager {

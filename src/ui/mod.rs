@@ -14,7 +14,15 @@ use termimad::crossterm::{
 };
 
 pub fn display_stats(stats: &ManagerStats) {
-    println!("----- upkg -----");
+
+    if let Some(version) = &stats.pacman_version {
+        let dashes = "-".repeat(version.len());
+        println!("{}", version);
+        println!("{}", dashes);
+    } else {
+        println!("----- upkg -----");
+    }
+
     println!("Total Installed Packages: {}", stats.total_installed);
     println!("Total Upgradable Packages: {}", stats.total_upgradable);
 
@@ -102,7 +110,6 @@ pub fn display_stats_with_graphics(
 
     let ascii_art = &ascii::PACMAN_ART;
 
-    // Format stats
     let last_update = stats
         .days_since_last_update
         .map(|s| core::normalize_duration(s))
@@ -152,7 +159,16 @@ pub fn display_stats_with_graphics(
     };
 
     // format stat lines that will be combined with ascii art as its printed
-    let stats_lines = vec![
+    let mut stats_lines = vec![];
+
+    // pacman version title
+    if let Some(version) = &stats.pacman_version {
+        let dashes = "-".repeat(version.len());
+        stats_lines.push(format!("{}", version.as_str().bold().with(Yellow)));
+        stats_lines.push(dashes);
+    }
+
+    stats_lines.extend(vec![
         format!("{} {}", "Installed:".bold().with(Yellow), stats.total_installed),
         format!("{} {}", "Upgradable:".bold().with(Yellow), stats.total_upgradable),
         format!("{} {}", "Last System Update:".bold().with(Yellow), last_update),
@@ -165,7 +181,7 @@ pub fn display_stats_with_graphics(
         format!("{} {}", "Mirror Last Sync:".bold().with(Yellow), sync_age),
         format!("{} {}", "Mirror Speed:".bold().with(Yellow), "-"),
         format!("{} {}", "Download ETA:".bold().with(Yellow), "-"),
-    ];
+    ]);
 
     // Print all ASCII art and stats side by side
     println!();
@@ -176,18 +192,18 @@ pub fn display_stats_with_graphics(
         println!("{} {}", art_line.cyan(), stat_line);
     }
 
-    // Move cursor up to build progress bar
+    // Move cursor up to build progress bar (at line 14, which has no stats)
     let mut stdout = io::stdout();
-    stdout.execute(MoveUp(4))?;
+    stdout.execute(MoveUp(2))?;
     stdout.execute(MoveToColumn(0))?;
     stdout.flush()?;
 
-    // Create progress bar
-    let art_line_12 = ascii_art.get(12).copied().unwrap_or("                       ");
+    // Create progress bar (uses ASCII art line 14, which has no stats)
+    let art_line_14 = ascii_art.get(14).copied().unwrap_or("                       ");
     let pb = ProgressBar::new(100);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template(&format!("{} {{spinner:.cyan}} {{msg}} {{bar:20.cyan/blue}} {{pos}}%", art_line_12.cyan()))
+            .template(&format!("{} {{spinner:.cyan}} {{msg}} {{bar:20.cyan/blue}} {{pos}}%", art_line_14.cyan()))
             .expect("Failed to create progress bar template")
             .progress_chars("━━╸")
             .tick_strings(&["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]),
@@ -213,15 +229,15 @@ pub fn display_stats_with_graphics(
     // reprint progrsess bar when finished
     pb.set_style(
         ProgressStyle::default_bar()
-            .template(&format!("{} {{bar:20.cyan/blue}} {{pos}}%", art_line_12.cyan()))
+            .template(&format!("{} {{bar:20.cyan/blue}} {{pos}}%", art_line_14.cyan()))
             .expect("Failed to create final template")
             .progress_chars("━━━━━━━━━━━━━━━━━━━━"),
     );
     pb.finish();
 
-    // Progress bar finishes on line 12, need to move down 4 lines to get to line 16
+    // Progress bar finishes on line 14, need to move down 2 lines to get past all content
     let mut stdout = io::stdout();
-    stdout.execute(MoveDown(4))?;
+    stdout.execute(MoveDown(2))?;
     stdout.flush()?;
 
     // Update Mirror Speed and Download ETA using crossterm
@@ -248,28 +264,27 @@ pub fn display_stats_with_graphics(
             "-".to_string()
         };
 
-        // Move up to Mirror Speed line (line 10)
-        // Current position is after line 15, so move up 6 lines
-        stdout.execute(MoveUp(6))?;
+        // Current position is line 16, move up 4 to get to 12
+        stdout.execute(MoveUp(4))?;
         stdout.execute(MoveToColumn(0))?;
 
         // Reprint Mirror Speed line with new value
-        let speed_art_line = ascii_art.get(10).copied().unwrap_or("                       ");
+        let speed_art_line = ascii_art.get(12).copied().unwrap_or("                       ");
         let speed_value = format!("{} {:.1} MB/s", "Mirror Speed:".bold().with(Yellow), speed);
         print!("{} {}", speed_art_line.cyan(), speed_value);
         stdout.execute(Clear(ClearType::UntilNewLine))?;
 
-        // Move down to Download ETA line (line 11)
+        // Move down to Download ETA line (13)
         stdout.execute(MoveDown(1))?;
         stdout.execute(MoveToColumn(0))?;
 
         // Reprint Download ETA line with new value
-        let eta_art_line = ascii_art.get(11).copied().unwrap_or("                       ");
+        let eta_art_line = ascii_art.get(13).copied().unwrap_or("                       ");
         let eta_value = format!("{} {}", "Download ETA:".bold().with(Yellow), eta_display);
         print!("{} {}", eta_art_line.cyan(), eta_value);
         stdout.execute(Clear(ClearType::UntilNewLine))?;
 
-        // Move cursor back down past all content (to line 16)
+        // Move cursor back down past all content (16)
         stdout.execute(MoveDown(5))?;
         stdout.flush()?;
     }
@@ -330,7 +345,15 @@ pub fn display_stats_with_graphics_no_speed(stats: &ManagerStats) -> io::Result<
         "-".to_string()
     };
 
-    let stats_lines = vec![
+    let mut stats_lines = vec![];
+
+    if let Some(version) = &stats.pacman_version {
+        let dashes = "-".repeat(version.len());
+        stats_lines.push(format!("{}", version.as_str().bold().with(Yellow)));
+        stats_lines.push(dashes);
+    }
+
+    stats_lines.extend(vec![
         format!("{} {}", "Installed:".bold().with(Yellow), stats.total_installed),
         format!("{} {}", "Upgradable:".bold().with(Yellow), stats.total_upgradable),
         format!("{} {}", "Last System Update:".bold().with(Yellow), last_update),
@@ -341,7 +364,7 @@ pub fn display_stats_with_graphics_no_speed(stats: &ManagerStats) -> io::Result<
         format!("{} {}", "Package Cache:".bold().with(Yellow), cache),
         format!("{} {}", "Mirror URL:".bold().with(Yellow), mirror_url),
         format!("{} {}", "Mirror Last Sync:".bold().with(Yellow), sync_age),
-    ];
+    ]);
 
     println!();
     let max_lines = ascii_art.len().max(stats_lines.len());

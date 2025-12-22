@@ -255,6 +255,22 @@ impl FetchPacmanStats {
         None
     }
 
+    /// Get pacman version
+    fn get_pacman_version(&self) -> Option<String> {
+        let output = Command::new("pacman").arg("--version").output().ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        for line in stdout.lines() {
+            if line.contains("Pacman v") && line.contains("libalpm v") {
+                if let Some(version_start) = line.find("Pacman v") {
+                    let version_str = &line[version_start..];
+                    return Some(version_str.trim().to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// test download speed with test file (extra.files)
     fn test_mirror_speed(&self, mirror_url: &str) -> Option<f64> {
         self.test_mirror_speed_with_progress_impl(mirror_url, |_| {})
@@ -348,7 +364,7 @@ impl PackageManager for FetchPacmanStats {
         let (download_size, total_installed_size, net_upgrade_size) = self.get_upgrade_sizes();
         let (orphaned_count, orphaned_size) = self.get_orphaned_packages();
 
-        // Get mirror info 
+        // Get mirror info
         let mirror_url = self.get_mirror_url();
         let mirror_sync_age = mirror_url
             .as_ref()
@@ -366,6 +382,7 @@ impl PackageManager for FetchPacmanStats {
             cache_size_mb: self.get_cache_size(),
             mirror_url,
             mirror_sync_age_hours: mirror_sync_age,
+            pacman_version: self.get_pacman_version(),
         }
     }
 
