@@ -2,7 +2,9 @@ use crate::managers::{ManagerStats, MirrorHealth, PackageManager};
 use alpm::Alpm;
 use chrono::{DateTime, FixedOffset, Local};
 use std::fs;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Instant;
 
 pub struct FetchPacmanStats;
@@ -357,6 +359,68 @@ impl FetchPacmanStats {
         Some(age_hours.max(0.0))
     }
 
+    /// Filter pacman output to remove information already shown by upkg
+    fn filter_pacman_line(line: &str) -> bool {
+        let trimmed = line.trim();
+
+        // Always keep empty lines (they provide spacing)
+        if trimmed.is_empty() {
+            return true;
+        }
+
+        // Skip size summaries (already shown by upkg)
+        if trimmed.starts_with("Total Download Size:") ||
+           trimmed.starts_with("Total Installed Size:") ||
+           trimmed.starts_with("Net Upgrade Size:") {
+            return false;
+        }
+
+        // Skip sync/resolution messages
+        if trimmed == "resolving dependencies..." ||
+           trimmed == "looking for conflicting packages..." {
+            return false;
+        }
+
+        // Skip database sync messages
+        // "core downloading...", "extra downloading...", "multilib downloading..."
+        if trimmed.starts_with("core downloading") ||
+           trimmed.starts_with("extra downloading") ||
+           trimmed.starts_with("multilib downloading") {
+            return false;
+        }
+
+        // Skip database sync progress (core, extra, multilib)
+        // These look like: " core     123.4 KiB  100 KiB/s 00:01 [----] 100%"
+        // if (trimmed.starts_with("core ") ||
+        //     trimmed.starts_with("extra ") ||
+        //     trimmed.starts_with("multilib ")) &&
+        //    trimmed.contains("KiB") &&
+        //    trimmed.contains("%") {
+        //     return false;
+        // }
+
+        // Skip other :: messages EXCEPT the proceed prompt
+        // if trimmed.starts_with(":: ") &&
+        //    !trimmed.contains("Proceed with installation") {
+        //     return false;
+        // }
+
+        // Keep everything else
+        true
+    }
+
+    /// Read from a stream and print filtered lines
+    fn filter_and_print_stream<R: std::io::Read>(reader: R) {
+        let buf_reader = BufReader::new(reader);
+        for line in buf_reader.lines() {
+            if let Ok(line) = line {
+                if Self::filter_pacman_line(&line) {
+                    println!("{}", line);
+                }
+            }
+        }
+    }
+
     /// Check if running as root
     fn is_root() -> bool {
         #[cfg(unix)]
@@ -389,7 +453,6 @@ impl PackageManager for FetchPacmanStats {
 
     fn upgrade_system(&self, text_mode: bool, speed_test: bool) -> Result<(), String> {
         use std::sync::mpsc;
-        use std::thread;
 
         // Check for root
         if !Self::is_root() {
@@ -443,16 +506,37 @@ impl PackageManager for FetchPacmanStats {
             }
         }
 
-        // Run pacman -Syu with inherited stdio (pass-through)
-        // pacman will handle its own confirmation prompt
+        // Capture stdout/stderr, keep stdin for y/n prompt
         let mut cmd = Command::new("pacman")
             .arg("-Syu")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::inherit())  // Keep stdin for interactive prompt
             .spawn()
             .map_err(|e| format!("Failed to execute pacman: {}", e))?;
 
-        // Wait for completion
+        // Get stdout/stderr handles
+        let stdout = cmd.stdout.take()
+            .ok_or("Failed to capture stdout")?;
+        let stderr = cmd.stderr.take()
+            .ok_or("Failed to capture stderr")?;
+
+        // Spawn threads to filter and print output
+        let stdout_thread = thread::spawn(move || {
+            Self::filter_and_print_stream(stdout);
+        });
+
+        let stderr_thread = thread::spawn(move || {
+            Self::filter_and_print_stream(stderr);
+        });
+
+        // Wait for pacman to finis
         let status = cmd.wait()
             .map_err(|e| format!("Failed to wait for pacman: {}", e))?;
+
+        // Wait for output threads to finish
+        stdout_thread.join().unwrap();
+        stderr_thread.join().unwrap();
 
         if status.success() {
             Ok(())
