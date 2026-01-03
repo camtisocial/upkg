@@ -366,6 +366,25 @@ pub fn display_stats_with_graphics_no_speed(stats: &ManagerStats) -> io::Result<
         format!("{}: {}", "Mirror Last Sync".bold().with(Yellow), sync_age),
     ]);
 
+    stats_lines.push(String::new());
+
+    // color palette rows 
+    let colors = [Black, DarkRed, DarkGreen, DarkYellow, DarkBlue, DarkMagenta, DarkCyan, Grey];
+    let bright_colors = [DarkGrey, Red, Green, Yellow, Blue, Magenta, Cyan, White];
+
+    let mut color_row_1 = String::new();
+    for color in &colors {
+        color_row_1.push_str(&format!("{}", "   ".on(*color)));
+    }
+
+    let mut color_row_2 = String::new();
+    for color in &bright_colors {
+        color_row_2.push_str(&format!("{}", "   ".on(*color)));
+    }
+
+    stats_lines.push(color_row_1);
+    stats_lines.push(color_row_2);
+
     println!();
     let max_lines = ascii_art.len().max(stats_lines.len());
     for i in 0..max_lines {
