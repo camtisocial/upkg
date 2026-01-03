@@ -11,9 +11,9 @@ pub fn upgrade_system(text_mode: bool, speed_test: bool) -> Result<(), String> {
 }
 
 // local queries + fast network (mirror URL, sync age)
-pub fn get_manager_stats() -> ManagerStats {
+pub fn get_manager_stats(debug: bool) -> ManagerStats {
     let backend = FetchPacmanStats;
-    backend.get_stats()
+    backend.get_stats(debug)
 }
 
 // slow network - speed test with progress reporting (0-100%)

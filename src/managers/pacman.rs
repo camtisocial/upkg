@@ -459,8 +459,7 @@ impl PackageManager for FetchPacmanStats {
             return Err("Sys upgrade requires root access, rerun with sudo".to_string());
         }
 
-        // Get and display stats
-        let stats = self.get_stats();
+        let stats = self.get_stats(false);
         if text_mode {
             if speed_test {
                 // Text mode with speed test
@@ -511,7 +510,7 @@ impl PackageManager for FetchPacmanStats {
             .arg("-Syu")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .stdin(Stdio::inherit())  // Keep stdin for interactive prompt
+            .stdin(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to execute pacman: {}", e))?;
 
@@ -545,29 +544,83 @@ impl PackageManager for FetchPacmanStats {
         }
     }
 
-    fn get_stats(&self) -> ManagerStats {
+    fn get_stats(&self, debug: bool) -> ManagerStats {
+        let total_start = Instant::now();
+
+        let start = Instant::now();
         let (download_size, total_installed_size, net_upgrade_size) = self.get_upgrade_sizes();
+        if debug {
+            eprintln!("Upgrade sizes: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
         let (orphaned_count, orphaned_size) = self.get_orphaned_packages();
+        if debug {
+            eprintln!("Orphaned packages: {:?}", start.elapsed());
+        }
 
         // Get mirror info
+        let start = Instant::now();
         let mirror_url = self.get_mirror_url();
+        if debug {
+            eprintln!("Mirror URL: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
         let mirror_sync_age = mirror_url
             .as_ref()
             .and_then(|url| self.check_mirror_sync(url));
+        if debug {
+            eprintln!("Mirror sync age: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
+        let total_installed = self.get_installed_count();
+        if debug {
+            eprintln!("Installed count: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
+        let total_upgradable = self.get_upgradable_count();
+        if debug {
+            eprintln!("Upgradable count: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
+        let days_since_last_update = self.get_seconds_since_update();
+        if debug {
+            eprintln!("Last update time: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
+        let cache_size_mb = self.get_cache_size();
+        if debug {
+            eprintln!("Cache size: {:?}", start.elapsed());
+        }
+
+        let start = Instant::now();
+        let pacman_version = self.get_pacman_version();
+        if debug {
+            eprintln!("Pacman version: {:?}", start.elapsed());
+        }
+
+        if debug {
+            eprintln!("TOTAL: {:?}", total_start.elapsed());
+        }
 
         ManagerStats {
-            total_installed: self.get_installed_count(),
-            total_upgradable: self.get_upgradable_count(),
-            days_since_last_update: self.get_seconds_since_update(),
+            total_installed,
+            total_upgradable,
+            days_since_last_update,
             download_size_mb: download_size,
             total_installed_size_mb: total_installed_size,
             net_upgrade_size_mb: net_upgrade_size,
             orphaned_packages: orphaned_count,
             orphaned_size_mb: orphaned_size,
-            cache_size_mb: self.get_cache_size(),
+            cache_size_mb,
             mirror_url,
             mirror_sync_age_hours: mirror_sync_age,
-            pacman_version: self.get_pacman_version(),
+            pacman_version,
         }
     }
 

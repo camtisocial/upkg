@@ -28,6 +28,10 @@ struct Cli {
     /// upgrade system packages (runs -Syu) requires root
     #[arg(short = 'U', long)]
     upgrade: bool,
+
+    /// show debug timing information
+    #[arg(short, long)]
+    debug: bool,
 }
 
 fn main() {
@@ -56,7 +60,7 @@ fn main() {
     println!();
 
     // get fast stats
-    let stats = core::get_manager_stats();
+    let stats = core::get_manager_stats(cli.debug);
 
     if text_mode {
         if speed_test {

@@ -53,7 +53,7 @@ pub trait PackageManager {
     fn upgrade_system(&self, text_mode: bool, speed_test: bool) -> Result<(), String>;
 
     // local + fast network operations
-    fn get_stats(&self) -> ManagerStats;
+    fn get_stats(&self, debug: bool) -> ManagerStats;
 
     // slow network operation
     fn test_mirror_speed_with_progress<F>(&self, mirror_url: &str, progress_callback: F) -> Option<f64>
