@@ -2,7 +2,7 @@ mod core;
 mod managers;
 mod ui;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::sync::mpsc;
 use std::thread;
 
@@ -10,37 +10,81 @@ use std::thread;
 #[derive(Parser)]
 #[command(name = "upkg")]
 #[command(version)]
-#[command(about = "Display information about your package manager", long_about = None)]
+#[command(about = "Display information about your package manager")]
+#[command(after_help = "\
+Commands:
+  -Sy           Sync package databases
+  -Syu          Sync databases and upgrade system
 
+Options:
+  -t, --text    Text mode (no ASCII art)
+  -s, --speed   Include mirror speed test
+  -d, --debug   Show debug timing information
+  -h, --help    Print help
+  -V, --version Print version")]
+#[command(disable_help_flag = true)]
+#[command(disable_version_flag = true)]
 struct Cli {
-    /// text mode
-    #[arg(short, long)]
+    #[arg(short, long, hide = true)]
     text: bool,
 
-    /// include speed test
-    #[arg(short, long)]
+    #[arg(short, long, hide = true)]
     speed: bool,
 
-    /// sync package databases requires root
-    #[arg(short = 'y', long)]
-    sync: bool,
+    #[arg(short = 'S', hide = true)]
+    sync_op: bool,
 
-    /// upgrade system packages (runs -Syu) requires root
-    #[arg(short = 'U', long)]
+    #[arg(short = 'y', hide = true)]
+    sync_db: bool,
+
+    #[arg(short = 'u', hide = true)]
     upgrade: bool,
 
-    /// show debug timing information
-    #[arg(short, long)]
+    #[arg(short, long, hide = true)]
     debug: bool,
+
+    #[arg(short = 'h', long = "help", hide = true)]
+    help: bool,
+
+    #[arg(short = 'V', long = "version", hide = true)]
+    version: bool,
+}
+
+fn print_error_and_help(msg: &str) -> ! {
+    eprintln!("error: {}\n", msg);
+    let _ = Cli::command().print_help();
+    eprintln!();
+    std::process::exit(1);
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(_) => print_error_and_help("unrecognized flag"),
+    };
+
+    if cli.help {
+        let _ = Cli::command().print_help();
+        println!();
+        std::process::exit(0);
+    }
+
+    if cli.version {
+        println!("upkg {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     let text_mode = cli.text;
     let speed_test = cli.speed;
 
-    // Handle system upgrade if requested (has its own spinner logic)
-    if cli.upgrade {
+    let invalid_flag = (cli.sync_op && !cli.sync_db && !cli.upgrade)
+        || ((cli.sync_db || cli.upgrade) && !cli.sync_op);
+    if invalid_flag {
+        print_error_and_help("unrecognized flag combination");
+    }
+
+    // Handle system upgrade if requested
+    if cli.sync_op && cli.upgrade {
         if let Err(e) = core::upgrade_system(text_mode, speed_test) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -49,7 +93,7 @@ fn main() {
     }
 
     // Get stats (with spinner if syncing)
-    let stats = if cli.sync {
+    let stats = if cli.sync_op && cli.sync_db {
         let spinner = core::create_spinner("Syncing package databases");
         if let Err(e) = core::sync_databases() {
             spinner.finish_and_clear();
