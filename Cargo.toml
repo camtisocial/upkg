@@ -7,6 +7,8 @@ edition = "2024"
 alpm = "5"
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+expectrl = "0.7"
 indicatif = "0.17"
 libc = "0.2"
 reqwest = { version = "0.12", features = ["blocking"] }
