@@ -110,7 +110,6 @@ impl FetchPacmanStats {
     /// Returns (download_size_mb, installed_size_mb, net_size_mb, package_count)
     /// Package count matches pacman -Syu (includes new deps, not just upgrades)
     fn get_upgrade_sizes(&self) -> (Option<f64>, Option<f64>, Option<f64>, u32) {
-
         // ########## Creating alpm connection, getting sync db and local db #########
 
         let mut alpm = match Alpm::new("/", "/var/lib/pacman") {
@@ -148,7 +147,6 @@ impl FetchPacmanStats {
         let mut net_upgrade_size: i64 = 0;
         let mut package_count: u32 = 0;
 
-
         // ########## comparing values/accumulating totals #########
 
         // Get packages to be upgraded/installed and calculate sizes
@@ -170,7 +168,6 @@ impl FetchPacmanStats {
             }
         }
 
-
         // ############ Cleaning up handles/transaction and data ##########
 
         // Handle removals
@@ -191,9 +188,13 @@ impl FetchPacmanStats {
             net_mib = 0.0;
         }
 
-        (Some(download_mib), Some(installed_mib), Some(net_mib), package_count)
+        (
+            Some(download_mib),
+            Some(installed_mib),
+            Some(net_mib),
+            package_count,
+        )
     }
-
 
     fn get_orphaned_packages(&self) -> (Option<u32>, Option<f64>) {
         let alpm = match Alpm::new("/", "/var/lib/pacman") {
@@ -276,7 +277,11 @@ impl FetchPacmanStats {
     }
 
     /// test download speed with progress callback (private implementation)
-    fn test_mirror_speed_with_progress_impl<F>(&self, mirror_url: &str, progress_callback: F) -> Option<f64>
+    fn test_mirror_speed_with_progress_impl<F>(
+        &self,
+        mirror_url: &str,
+        progress_callback: F,
+    ) -> Option<f64>
     where
         F: Fn(u64),
     {
@@ -373,7 +378,25 @@ impl FetchPacmanStats {
         result
     }
 
-    fn filter_pacman_line(line: &str) -> bool {
+    /// Filter for -Sy output (only remove "is up to date" messages)
+    fn filter_sync_line(line: &str) -> bool {
+        let clean = Self::strip_ansi(line);
+        let trimmed = clean.trim();
+
+        if trimmed.contains("downloading")
+            || trimmed.contains("is up to date")
+            || trimmed == "core"
+            || trimmed == "extra"
+            || trimmed == "multilib"
+        {
+            return false;
+        }
+
+        true
+    }
+
+    /// Filter for -Su output
+    fn filter_upgrade_line(line: &str) -> bool {
         let clean = Self::strip_ansi(line);
         let trimmed = clean.trim();
 
@@ -382,25 +405,18 @@ impl FetchPacmanStats {
         }
 
         // Skip size summaries
-        if trimmed.contains("Total Download Size:") ||
-           trimmed.contains("Total Installed Size:") ||
-           trimmed.contains("Net Upgrade Size:") {
-            return false;
-        }
-
-        // Skip database sync messages 
-        if trimmed.contains("downloading") ||
-           trimmed.contains("is up to date") ||
-           trimmed == "core" ||
-           trimmed == "extra" ||
-           trimmed == "multilib" {
+        if trimmed.contains("Total Download Size:")
+            || trimmed.contains("Total Installed Size:")
+            || trimmed.contains("Net Upgrade Size:")
+        {
             return false;
         }
 
         // Skip other messages
-        if trimmed.contains("resolving dependencies") ||
-           trimmed.contains("Synchronizing package database") ||
-           trimmed.contains("looking for conflicting packages") {
+        if trimmed.contains("resolving dependencies")
+            || trimmed.contains("looking for conflicting packages")
+            || trimmed.contains(":: Starting full system upgrade...")
+        {
             return false;
         }
 
@@ -420,6 +436,97 @@ impl FetchPacmanStats {
         }
     }
 
+    /// Filter mode for run_pacman_pty
+    fn should_print(line: &str, mode: &str) -> bool {
+        match mode {
+            "sync" => Self::filter_sync_line(line),
+            "upgrade" => Self::filter_upgrade_line(line),
+            _ => true, // no filtering
+        }
+    }
+
+    /// Run a pacman command with PTY
+    /// filter_mode: "sync" for -Sy, "upgrade" for -Su, "none" for no filtering
+    fn run_pacman_pty(args: &[&str], filter_mode: &str) -> Result<(), String> {
+        use std::io::Write;
+
+        let cmd = format!("pacman {}", args.join(" "));
+        let mut session =
+            expectrl::spawn(&cmd).map_err(|e| format!("Failed to spawn pacman: {}", e))?;
+
+        // Set PTY size to match actual terminal
+        if let Ok((cols, rows)) = crossterm::terminal::size() {
+            let _ = session.get_process_mut().set_window_size(cols, rows);
+        }
+
+        session.set_expect_timeout(Some(std::time::Duration::from_millis(100)));
+
+        let mut stdout = std::io::stdout();
+        let mut line_buffer = String::new();
+
+        loop {
+            match session.is_alive() {
+                Ok(true) => {}
+                Ok(false) => {
+                    if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter_mode) {
+                        println!("{}", line_buffer);
+                    }
+                    return Ok(());
+                }
+                Err(_) => {
+                    return Ok(());
+                }
+            }
+
+            let mut buf = [0u8; 1024];
+            match session.try_read(&mut buf) {
+                Ok(0) => continue,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+
+                    for ch in chunk.chars() {
+                        if ch == '\n' {
+                            if Self::should_print(&line_buffer, filter_mode) {
+                                println!("{}", line_buffer);
+                            }
+                            line_buffer.clear();
+                        } else if ch == '\r' {
+                            continue;
+                        } else {
+                            line_buffer.push(ch);
+
+                            // Check for prompts
+                            if line_buffer.ends_with("[Y/n] ")
+                                || (line_buffer.contains("::") && line_buffer.ends_with("]: "))
+                            {
+                                if Self::should_print(&line_buffer, filter_mode) {
+                                    print!("{}", line_buffer);
+                                    let _ = stdout.flush();
+                                }
+                                line_buffer.clear();
+
+                                let mut input = String::new();
+                                if std::io::stdin().read_line(&mut input).is_ok() {
+                                    let _ = session.send_line(input.trim());
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    _ => break,
+                },
+            }
+        }
+
+        if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter_mode) {
+            println!("{}", line_buffer);
+        }
+        Ok(())
+    }
 }
 
 impl PackageManager for FetchPacmanStats {
@@ -443,9 +550,13 @@ impl PackageManager for FetchPacmanStats {
 
         // Check for root
         if !Self::is_root() {
-            return Err("Sys upgrade requires root access, rerun with sudo".to_string());
+            return Err("System upgrade requires root access, rerun with sudo".to_string());
         }
 
+        // Step 1: Sync databases first (filter "is up to date" messages)
+        Self::run_pacman_pty(&["-Sy"], "sync")?;
+
+        // Step 2: Get and display stats (now accurate after sync)
         let stats = self.get_stats(false);
         if text_mode {
             if speed_test {
@@ -468,13 +579,16 @@ impl PackageManager for FetchPacmanStats {
 
                     thread::spawn(move || {
                         let backend = FetchPacmanStats;
-                        let speed = backend.test_mirror_speed_with_progress(&mirror_url, |progress| {
-                            let _ = progress_tx.send(progress);
-                        });
+                        let speed =
+                            backend.test_mirror_speed_with_progress(&mirror_url, |progress| {
+                                let _ = progress_tx.send(progress);
+                            });
                         let _ = speed_tx.send(speed);
                     });
 
-                    if let Err(e) = crate::ui::display_stats_with_graphics(&stats, progress_rx, speed_rx) {
+                    if let Err(e) =
+                        crate::ui::display_stats_with_graphics(&stats, progress_rx, speed_rx)
+                    {
                         eprintln!("Error running TUI: {}", e);
                     }
                 } else {
@@ -492,98 +606,8 @@ impl PackageManager for FetchPacmanStats {
             }
         }
 
-        // Spawn pacman in a pseudo terminal with expectrl
-        use std::io::Write;
-
-        let mut session = expectrl::spawn("pacman -Syu")
-            .map_err(|e| format!("Failed to spawn pacman: {}", e))?;
-
-        // Set pty size to match actual terminal 
-        if let Ok((cols, rows)) = crossterm::terminal::size() {
-            let _ = session.get_process_mut().set_window_size(cols, rows);
-        }
-
-        session.set_expect_timeout(Some(std::time::Duration::from_millis(100)));
-
-        let mut stdout = std::io::stdout();
-        let mut line_buffer = String::new();
-
-        loop {
-            // Check if process is still alive
-            match session.is_alive() {
-                Ok(true) => {}
-                Ok(false) => {
-                    // Process exited - print any remaining buffer and return
-                    if !line_buffer.is_empty() && Self::filter_pacman_line(&line_buffer) {
-                        println!("{}", line_buffer);
-                    }
-                    return Ok(());
-                }
-                Err(_) => {
-                    // assume done
-                    return Ok(());
-                }
-            }
-
-            // Try to read available data
-            let mut buf = [0u8; 1024];
-            match session.try_read(&mut buf) {
-                Ok(0) => {
-                    continue;
-                }
-                Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-
-                    for ch in chunk.chars() {
-                        if ch == '\n' {
-                            // filter and print
-                            if Self::filter_pacman_line(&line_buffer) {
-                                println!("{}", line_buffer);
-                            }
-                            line_buffer.clear();
-                        } else if ch == '\r' {
-                            continue;
-                        } else {
-                            line_buffer.push(ch);
-
-                            // Check buffer for y/n prompt
-                            if line_buffer.ends_with("[Y/n] ") ||
-                               (line_buffer.contains("::") && line_buffer.ends_with("]: ")) {
-                                if Self::filter_pacman_line(&line_buffer) {
-                                    print!("{}", line_buffer);
-                                    let _ = stdout.flush();
-                                }
-                                line_buffer.clear();
-
-                                // Read user input and forward to pacman
-                                let mut input = String::new();
-                                if std::io::stdin().read_line(&mut input).is_ok() {
-                                    let _ = session.send_line(input.trim());
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    match e.kind() {
-                        std::io::ErrorKind::WouldBlock |
-                        std::io::ErrorKind::Interrupted => {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        }
-                        _ => {
-                            // Other error - likely fatal, exit loop
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // print remaining buffer
-        if !line_buffer.is_empty() && Self::filter_pacman_line(&line_buffer) {
-            println!("{}", line_buffer);
-        }
-        Ok(())
+        // Step 3: Run upgrade (filter size summaries since we already displayed them)
+        Self::run_pacman_pty(&["-Su"], "upgrade")
     }
 
     fn get_stats(&self, debug: bool) -> ManagerStats {
@@ -591,7 +615,8 @@ impl PackageManager for FetchPacmanStats {
 
         let start = Instant::now();
         // get_upgrade_sizes also returns transaction package count (matches pacman -Syu)
-        let (download_size, total_installed_size, net_upgrade_size, total_upgradable) = self.get_upgrade_sizes();
+        let (download_size, total_installed_size, net_upgrade_size, total_upgradable) =
+            self.get_upgrade_sizes();
         if debug {
             eprintln!("Upgrade sizes + count: {:?}", start.elapsed());
         }
@@ -664,7 +689,11 @@ impl PackageManager for FetchPacmanStats {
         }
     }
 
-    fn test_mirror_speed_with_progress<F>(&self, mirror_url: &str, progress_callback: F) -> Option<f64>
+    fn test_mirror_speed_with_progress<F>(
+        &self,
+        mirror_url: &str,
+        progress_callback: F,
+    ) -> Option<f64>
     where
         F: Fn(u64),
     {
