@@ -557,6 +557,10 @@ impl FetchPacmanStats {
     }
 
     fn run_pacman_sync() -> Result<(), String> {
+        if !Self::is_root() {
+            return Err("Database sync requires root, rerun with sudo".to_string());
+        }
+
         let mut session =
             expectrl::spawn("pacman -Sy").map_err(|e| format!("Failed to spawn pacman: {}", e))?;
 
@@ -635,16 +639,18 @@ impl PackageManager for FetchPacmanStats {
         Self::run_pacman_sync()
     }
 
-    fn upgrade_system(&self, text_mode: bool, speed_test: bool) -> Result<(), String> {
+    fn upgrade_system(&self, text_mode: bool, speed_test: bool, sync_first: bool) -> Result<(), String> {
         use std::sync::mpsc;
 
         // Check for root
         if !Self::is_root() {
-            return Err("System upgrade requires root access, rerun with sudo".to_string());
+            return Err("System upgrade requires root, rerun with sudo".to_string());
         }
 
-        // 1: Sync databases with progress display, then get stats
-        Self::run_pacman_sync()?;
+        // 1: Optionally sync databases with spinner, then get stats
+        if sync_first {
+            Self::run_pacman_sync()?;
+        }
         let spinner = crate::core::create_spinner("Gathering stats");
         let stats = self.get_stats(false);
         spinner.finish_and_clear();

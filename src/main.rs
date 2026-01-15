@@ -14,6 +14,7 @@ use std::thread;
 #[command(after_help = "\
 Commands:
   -Sy           Sync package databases
+  -Su           Upgrade system (using local database)
   -Syu          Sync databases and upgrade system
 
 Options:
@@ -83,9 +84,10 @@ fn main() {
         print_error_and_help("unrecognized flag combination");
     }
 
-    // Handle system upgrade 
+    // Handle system upgrade (-Su or -Syu)
     if cli.sync_op && cli.upgrade {
-        if let Err(e) = core::upgrade_system(text_mode, speed_test) {
+        let sync_first = cli.sync_db;
+        if let Err(e) = core::upgrade_system(text_mode, speed_test, sync_first) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }

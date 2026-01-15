@@ -20,8 +20,8 @@ pub trait PackageManager {
     // requires root
     fn sync_databases(&self) -> Result<(), String>;
 
-    // requires root - runs system upgrade (pacman -Syu)
-    fn upgrade_system(&self, text_mode: bool, speed_test: bool) -> Result<(), String>;
+    // requires root 
+    fn upgrade_system(&self, text_mode: bool, speed_test: bool, sync_first: bool) -> Result<(), String>;
 
     // local + fast network operations
     fn get_stats(&self, debug: bool) -> ManagerStats;

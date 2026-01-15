@@ -18,9 +18,9 @@ pub fn sync_databases() -> Result<(), String> {
     backend.sync_databases()
 }
 
-pub fn upgrade_system(text_mode: bool, speed_test: bool) -> Result<(), String> {
+pub fn upgrade_system(text_mode: bool, speed_test: bool, sync_first: bool) -> Result<(), String> {
     let backend = FetchPacmanStats;
-    backend.upgrade_system(text_mode, speed_test)
+    backend.upgrade_system(text_mode, speed_test, sync_first)
 }
 
 // local queries + fast network (mirror URL, sync age)
