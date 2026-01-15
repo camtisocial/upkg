@@ -1,15 +1,94 @@
 use crate::managers::{ManagerStats, MirrorHealth, PackageManager};
 use alpm::Alpm;
 use chrono::{DateTime, FixedOffset, Local};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::process::Command;
 use std::thread;
 use std::time::Instant;
 
+#[derive(Clone, Copy)]
+enum DbSyncState {
+    Syncing(u8), 
+    Complete,
+}
+
+struct SyncProgress {
+    core: DbSyncState,
+    extra: DbSyncState,
+    multilib: DbSyncState,
+}
+
+impl SyncProgress {
+    fn new() -> Self {
+        Self {
+            core: DbSyncState::Syncing(0),
+            extra: DbSyncState::Syncing(0),
+            multilib: DbSyncState::Syncing(0),
+        }
+    }
+
+    fn format(&self) -> String {
+        format!(
+            "core {} | extra {} | multilib {}",
+            Self::format_state(self.core),
+            Self::format_state(self.extra),
+            Self::format_state(self.multilib)
+        )
+    }
+
+    fn format_state(state: DbSyncState) -> String {
+        match state {
+            DbSyncState::Syncing(pct) => format!("{}%", pct),
+            DbSyncState::Complete => "✓".to_string(),
+        }
+    }
+
+    /// Update from pacman Su output
+    fn update_from_line(&mut self, line: &str) {
+        let clean = FetchPacmanStats::strip_ansi(line);
+        let trimmed = clean.trim();
+
+        if trimmed.contains("is up to date") {
+            if trimmed.starts_with("core") {
+                self.core = DbSyncState::Complete;
+            } else if trimmed.starts_with("extra") {
+                self.extra = DbSyncState::Complete;
+            } else if trimmed.starts_with("multilib") {
+                self.multilib = DbSyncState::Complete;
+            }
+            return;
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let db_name = parts[0];
+            let last = parts[parts.len() - 1];
+
+            if let Some(pct_str) = last.strip_suffix('%') {
+                if let Ok(pct) = pct_str.parse::<u8>() {
+                    let state = if pct >= 100 {
+                        DbSyncState::Complete
+                    } else {
+                        DbSyncState::Syncing(pct)
+                    };
+
+                    match db_name {
+                        "core" => self.core = state,
+                        "extra" => self.extra = state,
+                        "multilib" => self.multilib = state,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+}
+
 pub struct FetchPacmanStats;
 
 impl FetchPacmanStats {
-    /// Get the count of installed packages using pacman -Q
     fn get_installed_count(&self) -> u32 {
         let output = Command::new("pacman").arg("-Q").output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -39,7 +118,7 @@ impl FetchPacmanStats {
             let trimmed = line.trim();
 
             // Extract timestamp of any line
-            // Format: [2025-12-05T15:43:51-0800] ...
+            // Format: [2025-12-05T15:43:51-0800]
             let timestamp = trimmed
                 .split(']')
                 .next()
@@ -108,7 +187,6 @@ impl FetchPacmanStats {
     }
 
     /// Returns (download_size_mb, installed_size_mb, net_size_mb, package_count)
-    /// Package count matches pacman -Syu (includes new deps, not just upgrades)
     fn get_upgrade_sizes(&self) -> (Option<f64>, Option<f64>, Option<f64>, u32) {
         // ########## Creating alpm connection, getting sync db and local db #########
 
@@ -150,7 +228,6 @@ impl FetchPacmanStats {
         // ########## comparing values/accumulating totals #########
 
         // Get packages to be upgraded/installed and calculate sizes
-        // This includes upgrades AND new dependencies (matches pacman -Syu output)
         for pkg in alpm.trans_add().into_iter() {
             package_count += 1;
             total_download_size += pkg.download_size();
@@ -301,16 +378,13 @@ impl FetchPacmanStats {
             return None;
         }
 
-        // Get content length for progress calculation
         let total_size = response.content_length().unwrap_or(0);
-
-        // Stream the download in chunks and track progress
         let mut downloaded: u64 = 0;
         let mut buffer = vec![0; 8192];
 
         loop {
             match response.read(&mut buffer) {
-                Ok(0) => break, // EOF
+                Ok(0) => break, 
                 Ok(n) => {
                     downloaded += n as u64;
 
@@ -335,7 +409,6 @@ impl FetchPacmanStats {
         }
     }
 
-    /// Check the lastsync
     fn check_mirror_sync(&self, mirror_url: &str) -> Option<f64> {
         let lastsync_url = format!("{}/lastsync", mirror_url);
 
@@ -353,7 +426,6 @@ impl FetchPacmanStats {
         let timestamp_str = response.text().ok()?;
         let timestamp: i64 = timestamp_str.trim().parse().ok()?;
 
-        // Convert Unix timestamp to hours ago
         let now = Local::now().timestamp();
         let age_seconds = now - timestamp;
         let age_hours = age_seconds as f64 / 3600.0;
@@ -378,7 +450,7 @@ impl FetchPacmanStats {
         result
     }
 
-    /// Filter for -Sy output (only remove "is up to date" messages)
+    /// Filter for -Sy output
     fn filter_sync_line(line: &str) -> bool {
         let clean = Self::strip_ansi(line);
         let trimmed = clean.trim();
@@ -401,7 +473,7 @@ impl FetchPacmanStats {
         let trimmed = clean.trim();
 
         if trimmed.is_empty() {
-            return true;
+            return false;
         }
 
         // Skip size summaries
@@ -436,34 +508,16 @@ impl FetchPacmanStats {
         }
     }
 
-    fn run_pacman_silent(args: &[&str]) -> Result<(), String> {
-        use std::process::{Command, Stdio};
-
-        let status = Command::new("pacman")
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| format!("Failed to spawn pacman: {}", e))?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("pacman {} failed with status: {}", args.join(" "), status))
-        }
-    }
 
     /// Filter mode for run_pacman_pty
     fn should_print(line: &str, mode: &str) -> bool {
         match mode {
             "sync" => Self::filter_sync_line(line),
             "upgrade" => Self::filter_upgrade_line(line),
-            _ => true, // no filtering
+            _ => true,
         }
     }
 
-    /// Run a pacman command with PTY
-    /// filter_mode: "sync" for -Sy, "upgrade" for -Su, "none" for no filtering
     fn run_pacman_pty(args: &[&str], filter_mode: &str) -> Result<(), String> {
         use std::io::Write;
 
@@ -471,7 +525,7 @@ impl FetchPacmanStats {
         let mut session =
             expectrl::spawn(&cmd).map_err(|e| format!("Failed to spawn pacman: {}", e))?;
 
-        // Set PTY size to match actual terminal
+        // Set pseudo terminal size to match actual terminal
         if let Ok((cols, rows)) = crossterm::terminal::size() {
             let _ = session.get_process_mut().set_window_size(cols, rows);
         }
@@ -508,7 +562,11 @@ impl FetchPacmanStats {
                             }
                             line_buffer.clear();
                         } else if ch == '\r' {
-                            continue;
+                            if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter_mode) {
+                                print!("\r{}", line_buffer);
+                                let _ = stdout.flush();
+                            }
+                            line_buffer.clear();
                         } else {
                             line_buffer.push(ch);
 
@@ -517,6 +575,9 @@ impl FetchPacmanStats {
                                 || (line_buffer.contains("::") && line_buffer.ends_with("]: "))
                             {
                                 if Self::should_print(&line_buffer, filter_mode) {
+                                    if line_buffer.contains("Proceed with installation") {
+                                        println!("\n\n");
+                                    }
                                     print!("{}", line_buffer);
                                     let _ = stdout.flush();
                                 }
@@ -544,11 +605,84 @@ impl FetchPacmanStats {
         }
         Ok(())
     }
+
+    fn run_pacman_sync() -> Result<(), String> {
+        let mut session =
+            expectrl::spawn("pacman -Sy").map_err(|e| format!("Failed to spawn pacman: {}", e))?;
+
+        if let Ok((cols, rows)) = crossterm::terminal::size() {
+            let _ = session.get_process_mut().set_window_size(cols, rows);
+        }
+
+        session.set_expect_timeout(Some(std::time::Duration::from_millis(100)));
+
+        let mut progress = SyncProgress::new();
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} Syncing databases: {msg}")
+                .unwrap(),
+        );
+        pb.set_message(progress.format());
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+
+        let mut line_buffer = String::new();
+
+        loop {
+            match session.is_alive() {
+                Ok(true) => {}
+                Ok(false) => {
+                    if !line_buffer.is_empty() {
+                        progress.update_from_line(&line_buffer);
+                        pb.set_message(progress.format());
+                    }
+                    break;
+                }
+                Err(_) => break,
+            }
+
+            let mut buf = [0u8; 1024];
+            match session.try_read(&mut buf) {
+                Ok(0) => continue,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+
+                    for ch in chunk.chars() {
+                        if ch == '\n' || ch == '\r' {
+                            if !line_buffer.is_empty() {
+                                progress.update_from_line(&line_buffer);
+                                pb.set_message(progress.format());
+                            }
+                            line_buffer.clear();
+                        } else {
+                            line_buffer.push(ch);
+                        }
+                    }
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    _ => break,
+                },
+            }
+        }
+
+        progress.core = DbSyncState::Complete;
+        progress.extra = DbSyncState::Complete;
+        progress.multilib = DbSyncState::Complete;
+        pb.set_message(progress.format());
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        pb.finish_and_clear();
+
+        Ok(())
+    }
 }
 
 impl PackageManager for FetchPacmanStats {
     fn sync_databases(&self) -> Result<(), String> {
-        Self::run_pacman_silent(&["-Sy"])
+        Self::run_pacman_sync()
     }
 
     fn upgrade_system(&self, text_mode: bool, speed_test: bool) -> Result<(), String> {
@@ -559,10 +693,9 @@ impl PackageManager for FetchPacmanStats {
             return Err("System upgrade requires root access, rerun with sudo".to_string());
         }
 
-        // 1: Start spinner, sync databases, get stats, clear spinner
-        let spinner = crate::core::create_spinner("Syncing package databases");
-        Self::run_pacman_silent(&["-Sy"])?;
-        spinner.set_message("Gathering stats");
+        // 1: Sync databases with progress display, then get stats
+        Self::run_pacman_sync()?;
+        let spinner = crate::core::create_spinner("Gathering stats");
         let stats = self.get_stats(false);
         spinner.finish_and_clear();
 

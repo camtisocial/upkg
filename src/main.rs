@@ -83,7 +83,7 @@ fn main() {
         print_error_and_help("unrecognized flag combination");
     }
 
-    // Handle system upgrade if requested
+    // Handle system upgrade 
     if cli.sync_op && cli.upgrade {
         if let Err(e) = core::upgrade_system(text_mode, speed_test) {
             eprintln!("Error: {}", e);
@@ -92,15 +92,13 @@ fn main() {
         std::process::exit(0);
     }
 
-    // Get stats (with spinner if syncing)
+    // Get stats
     let stats = if cli.sync_op && cli.sync_db {
-        let spinner = core::create_spinner("Syncing package databases");
         if let Err(e) = core::sync_databases() {
-            spinner.finish_and_clear();
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
-        spinner.set_message("Gathering stats");
+        let spinner = core::create_spinner("Gathering stats");
         let stats = core::get_manager_stats(cli.debug);
         spinner.finish_and_clear();
         stats
