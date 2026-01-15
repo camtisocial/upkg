@@ -1,34 +1,5 @@
 pub mod pacman;
 
-use std::fs;
-
-/// read /etc/os-release
-#[allow(dead_code)]
-pub fn detect_package_manager() -> Result<&'static str, String> {
-    let content = fs::read_to_string("/etc/os-release")
-        .map_err(|e| format!("Failed to read /etc/os-release: {}", e))?;
-
-    // Parse the ID field
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with("ID=") {
-            let id = line
-                .trim_start_matches("ID=")
-                .trim_matches('"')
-                .to_lowercase();
-
-            return match id.as_str() {
-                "arch" | "manjaro" | "endeavouros" | "garuda" => Ok("pacman"),
-                "debian" | "ubuntu" | "linuxmint" | "pop" | "elementary" => Ok("apt"),
-                "fedora" | "rhel" | "centos" | "rocky" | "almalinux" => Ok("dnf"),
-                _ => Err(format!("Unsupported distribution ID: {}", id)),
-            };
-        }
-    }
-
-    Err("no id found in /etc/os-release".to_string())
-}
-
 #[derive(Debug)]
 pub struct ManagerStats {
     pub total_installed: u32,

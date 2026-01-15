@@ -86,6 +86,13 @@ impl SyncProgress {
 
 }
 
+pub struct UpgradeStats {
+    pub download_size_mb: Option<f64>,
+    pub installed_size_mb: Option<f64>,
+    pub net_upgrade_size_mb: Option<f64>,
+    pub package_count: u32,
+}
+
 pub struct FetchPacmanStats;
 
 impl FetchPacmanStats {
@@ -98,78 +105,37 @@ impl FetchPacmanStats {
     /// get time since last update from /var/log/pacman.log
     /// returns seconds
     fn get_seconds_since_update(&self) -> Option<i64> {
-        /*
-        This is checking the log for the last time the user ran pacman -Syu, and packages
-        actually installed thereafter, that way we are actually returning last time updated
-        rathern than last time -Syu was run, ideally. kind of janky
-        */
+        // Look for "starting full system upgrade" followed by "transaction completed"
 
         let contents =
             fs::read_to_string("/var/log/pacman.log").expect("Failed to read pacman.log");
 
-        let mut saw_syu = false;
-        let mut saw_sync = false;
         let mut saw_upgrade_start = false;
-        let mut saw_alpm = false;
-        let mut block_timestamp: Option<String> = None;
+        let mut upgrade_start_timestamp: Option<String> = None;
         let mut last_valid_timestamp: Option<String> = None;
 
         for line in contents.lines() {
             let trimmed = line.trim();
 
-            // Extract timestamp of any line
-            // Format: [2025-12-05T15:43:51-0800]
+            // Extract timestamp: [2025-12-05T15:43:51-0800]
             let timestamp = trimmed
                 .split(']')
                 .next()
                 .map(|x| x.trim_start_matches('['))
                 .unwrap_or("");
 
-            // look for start of syu block, then alpm lines to make sure the update actually
-            // started
-            if trimmed.contains("Running 'pacman -Syu'") {
-                // reset tracking
-                saw_syu = true;
-                saw_sync = false;
-                saw_upgrade_start = false;
-                saw_alpm = false;
-                block_timestamp = Some(timestamp.to_string());
-                continue;
-            }
-
-            if saw_syu && trimmed.contains("synchronizing package lists") {
-                saw_sync = true;
-                continue;
-            }
-
-            if saw_sync && trimmed.contains("starting full system upgrade") {
+            if trimmed.contains("starting full system upgrade") {
                 saw_upgrade_start = true;
-                continue;
+                upgrade_start_timestamp = Some(timestamp.to_string());
             }
 
-            if saw_upgrade_start && trimmed.contains("[ALPM]") {
-                saw_alpm = true;
-            }
-
-            // If we start another pacman run before ALPM, the previous wasn't real
-            if trimmed.contains("[PACMAN] Running") && !trimmed.contains("pacman -Syu") {
-                // restart
-                saw_syu = false;
-                saw_sync = false;
+            if saw_upgrade_start && trimmed.contains("transaction completed") {
+                last_valid_timestamp = upgrade_start_timestamp.clone();
                 saw_upgrade_start = false;
-                saw_alpm = false;
-                block_timestamp = None;
-                continue;
-            }
-
-            // if the block is complete, update last_valid_timestamp
-            if saw_syu && saw_sync && saw_upgrade_start && saw_alpm {
-                last_valid_timestamp = block_timestamp.clone();
             }
         }
 
         if let Some(ts) = last_valid_timestamp {
-            // confert to RFC3339
             let formatted_date = format!("{}:{}", &ts[..22], &ts[22..]);
 
             let parsed: DateTime<FixedOffset> =
@@ -186,13 +152,19 @@ impl FetchPacmanStats {
         None
     }
 
-    /// Returns (download_size_mb, installed_size_mb, net_size_mb, package_count)
-    fn get_upgrade_sizes(&self) -> (Option<f64>, Option<f64>, Option<f64>, u32) {
+    fn get_upgrade_sizes(&self) -> UpgradeStats {
+        let fail = UpgradeStats {
+            download_size_mb: None,
+            installed_size_mb: None,
+            net_upgrade_size_mb: None,
+            package_count: 0,
+        };
+
         // ########## Creating alpm connection, getting sync db and local db #########
 
         let mut alpm = match Alpm::new("/", "/var/lib/pacman") {
             Ok(a) => a,
-            Err(_) => return (None, None, None, 0),
+            Err(_) => return fail,
         };
 
         // Register sync databases
@@ -202,19 +174,19 @@ impl FetchPacmanStats {
 
         // Set NO_LOCK, avoids needing root
         if alpm.trans_init(alpm::TransFlag::NO_LOCK).is_err() {
-            return (None, None, None, 0);
+            return fail;
         }
 
         // Add sysupgrade to transaction
         if alpm.sync_sysupgrade(false).is_err() {
             let _ = alpm.trans_release();
-            return (None, None, None, 0);
+            return fail;
         }
 
         // Prepare the transaction
         if alpm.trans_prepare().is_err() {
             let _ = alpm.trans_release();
-            return (None, None, None, 0);
+            return fail;
         }
 
         // Get local database for comparing old vs new sizes
@@ -265,12 +237,12 @@ impl FetchPacmanStats {
             net_mib = 0.0;
         }
 
-        (
-            Some(download_mib),
-            Some(installed_mib),
-            Some(net_mib),
+        UpgradeStats {
+            download_size_mb: Some(download_mib),
+            installed_size_mb: Some(installed_mib),
+            net_upgrade_size_mb: Some(net_mib),
             package_count,
-        )
+        }
     }
 
     fn get_orphaned_packages(&self) -> (Option<u32>, Option<f64>) {
@@ -348,12 +320,7 @@ impl FetchPacmanStats {
         None
     }
 
-    /// test download speed with test file (extra.files)
-    fn test_mirror_speed(&self, mirror_url: &str) -> Option<f64> {
-        self.test_mirror_speed_with_progress_impl(mirror_url, |_| {})
-    }
-
-    /// test download speed with progress callback (private implementation)
+    /// Test download speed with progress callback
     fn test_mirror_speed_with_progress_impl<F>(
         &self,
         mirror_url: &str,
@@ -450,23 +417,6 @@ impl FetchPacmanStats {
         result
     }
 
-    /// Filter for -Sy output
-    fn filter_sync_line(line: &str) -> bool {
-        let clean = Self::strip_ansi(line);
-        let trimmed = clean.trim();
-
-        if trimmed.contains("downloading")
-            || trimmed.contains("is up to date")
-            || trimmed == "core"
-            || trimmed == "extra"
-            || trimmed == "multilib"
-        {
-            return false;
-        }
-
-        true
-    }
-
     /// Filter for -Su output
     fn filter_upgrade_line(line: &str) -> bool {
         let clean = Self::strip_ansi(line);
@@ -509,16 +459,16 @@ impl FetchPacmanStats {
     }
 
 
-    /// Filter mode for run_pacman_pty
-    fn should_print(line: &str, mode: &str) -> bool {
-        match mode {
-            "sync" => Self::filter_sync_line(line),
-            "upgrade" => Self::filter_upgrade_line(line),
-            _ => true,
+    /// Filter output for run_pacman_pty
+    fn should_print(line: &str, filter: bool) -> bool {
+        if filter {
+            Self::filter_upgrade_line(line)
+        } else {
+            true
         }
     }
 
-    fn run_pacman_pty(args: &[&str], filter_mode: &str) -> Result<(), String> {
+    fn run_pacman_pty(args: &[&str], filter: bool) -> Result<(), String> {
         use std::io::Write;
 
         let cmd = format!("pacman {}", args.join(" "));
@@ -539,7 +489,7 @@ impl FetchPacmanStats {
             match session.is_alive() {
                 Ok(true) => {}
                 Ok(false) => {
-                    if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter_mode) {
+                    if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter) {
                         println!("{}", line_buffer);
                     }
                     return Ok(());
@@ -557,12 +507,12 @@ impl FetchPacmanStats {
 
                     for ch in chunk.chars() {
                         if ch == '\n' {
-                            if Self::should_print(&line_buffer, filter_mode) {
+                            if Self::should_print(&line_buffer, filter) {
                                 println!("{}", line_buffer);
                             }
                             line_buffer.clear();
                         } else if ch == '\r' {
-                            if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter_mode) {
+                            if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter) {
                                 print!("\r{}", line_buffer);
                                 let _ = stdout.flush();
                             }
@@ -574,7 +524,7 @@ impl FetchPacmanStats {
                             if line_buffer.ends_with("[Y/n] ")
                                 || (line_buffer.contains("::") && line_buffer.ends_with("]: "))
                             {
-                                if Self::should_print(&line_buffer, filter_mode) {
+                                if Self::should_print(&line_buffer, filter) {
                                     if line_buffer.contains("Proceed with installation") {
                                         println!("\n\n");
                                     }
@@ -600,7 +550,7 @@ impl FetchPacmanStats {
             }
         }
 
-        if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter_mode) {
+        if !line_buffer.is_empty() && Self::should_print(&line_buffer, filter) {
             println!("{}", line_buffer);
         }
         Ok(())
@@ -749,15 +699,14 @@ impl PackageManager for FetchPacmanStats {
         }
 
         // 3: Run upgrade
-        Self::run_pacman_pty(&["-Su"], "upgrade")
+        Self::run_pacman_pty(&["-Su"], true)
     }
 
     fn get_stats(&self, debug: bool) -> ManagerStats {
         let total_start = Instant::now();
 
         let start = Instant::now();
-        let (download_size, total_installed_size, net_upgrade_size, total_upgradable) =
-            self.get_upgrade_sizes();
+        let upgrade_stats = self.get_upgrade_sizes();
         if debug {
             eprintln!("Upgrade sizes + count: {:?}", start.elapsed());
         }
@@ -813,11 +762,11 @@ impl PackageManager for FetchPacmanStats {
 
         ManagerStats {
             total_installed,
-            total_upgradable,
+            total_upgradable: upgrade_stats.package_count,
             days_since_last_update,
-            download_size_mb: download_size,
-            total_installed_size_mb: total_installed_size,
-            net_upgrade_size_mb: net_upgrade_size,
+            download_size_mb: upgrade_stats.download_size_mb,
+            total_installed_size_mb: upgrade_stats.installed_size_mb,
+            net_upgrade_size_mb: upgrade_stats.net_upgrade_size_mb,
             orphaned_packages: orphaned_count,
             orphaned_size_mb: orphaned_size,
             cache_size_mb,
@@ -840,7 +789,7 @@ impl PackageManager for FetchPacmanStats {
 
     fn test_mirror_health(&self) -> Option<MirrorHealth> {
         let mirror_url = self.get_mirror_url()?;
-        let speed = self.test_mirror_speed(&mirror_url);
+        let speed = self.test_mirror_speed_with_progress_impl(&mirror_url, |_| {});
         let sync_age = self.check_mirror_sync(&mirror_url);
 
         Some(MirrorHealth {
