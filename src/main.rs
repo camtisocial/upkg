@@ -9,26 +9,22 @@ use config::Config;
 
 /// Display information about your package manager
 #[derive(Parser)]
-#[command(name = "upkg")]
+#[command(name = "pacfetch")]
 #[command(version)]
-#[command(about = "Display information about your package manager")]
+#[command(about = "A neofetch style wrapper for pacman's Syu/Sy/Su commands")]
 #[command(after_help = "\
 Commands:
   -Sy           Sync package databases
-  -Su           Upgrade system (using local database)
+  -Su           Upgrade system 
   -Syu          Sync databases and upgrade system
 
 Options:
-  -t, --text    Text mode (no ASCII art)
-  -d, --debug   Show debug timing information
+  -d, --debug   Debug mode
   -h, --help    Print help
   -V, --version Print version")]
 #[command(disable_help_flag = true)]
 #[command(disable_version_flag = true)]
 struct Cli {
-    #[arg(short, long, hide = true)]
-    text: bool,
-
     #[arg(short = 'S', hide = true)]
     sync_op: bool,
 
@@ -44,7 +40,7 @@ struct Cli {
     #[arg(short = 'h', long = "help", hide = true)]
     help: bool,
 
-    #[arg(short = 'V', long = "version", hide = true)]
+    #[arg(short = 'V', short_alias = 'v', long = "version", hide = true)]
     version: bool,
 }
 
@@ -68,11 +64,9 @@ fn main() {
     }
 
     if cli.version {
-        println!("upkg {}", env!("CARGO_PKG_VERSION"));
+        println!("pacfetch {}", env!("CARGO_PKG_VERSION"));
         std::process::exit(0);
     }
-
-    let text_mode = cli.text;
 
     // Load config
     let config = Config::load();
@@ -86,8 +80,8 @@ fn main() {
     // Handle system upgrade (-Su or -Syu)
     if cli.sync_op && cli.upgrade {
         let sync_first = cli.sync_db;
-        if let Err(e) = pacman::upgrade_system(text_mode, sync_first) {
-            eprintln!("Error: {}", e);
+        if let Err(e) = pacman::upgrade_system(cli.debug, sync_first) {
+            eprintln!("error: {}", e);
             std::process::exit(1);
         }
         std::process::exit(0);
@@ -96,14 +90,14 @@ fn main() {
     // Get stats
     let stats = if cli.sync_op && cli.sync_db {
         if let Err(e) = pacman::sync_databases() {
-            eprintln!("Error: {}", e);
+            eprintln!("error: {}", e);
             std::process::exit(1);
         }
         let spinner = util::create_spinner("Gathering stats");
         let stats = pacman::get_stats(&config.display.stats, cli.debug, Some(&spinner));
         spinner.finish_and_clear();
         stats
-    } else if text_mode || cli.debug {
+    } else if cli.debug {
         println!();
         pacman::get_stats(&config.display.stats, cli.debug, None)
     } else {
@@ -113,12 +107,12 @@ fn main() {
         stats
     };
 
-    if text_mode {
+    if cli.debug {
         ui::display_stats(&stats, &config);
         println!();
     } else {
         if let Err(e) = ui::display_stats_with_graphics(&stats, &config) {
-            eprintln!("Error running graphics display: {}", e);
+            eprintln!("error: {}", e);
         }
     }
 }

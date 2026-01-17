@@ -450,7 +450,7 @@ fn run_pacman_pty(args: &[&str], filter: bool) -> Result<(), String> {
 
 fn run_pacman_sync() -> Result<(), String> {
     if !util::is_root() {
-        return Err("Database sync requires root, rerun with sudo".to_string());
+        return Err("you cannot perform this operation unless you are root.".to_string());
     }
 
     let mut session =
@@ -531,9 +531,9 @@ pub fn sync_databases() -> Result<(), String> {
     run_pacman_sync()
 }
 
-pub fn upgrade_system(text_mode: bool, sync_first: bool) -> Result<(), String> {
+pub fn upgrade_system(debug: bool, sync_first: bool) -> Result<(), String> {
     if !util::is_root() {
-        return Err("System upgrade requires root, rerun with sudo".to_string());
+        return Err("you cannot perform this operation unless you are root.".to_string());
     }
 
     let config = crate::config::Config::load();
@@ -541,16 +541,22 @@ pub fn upgrade_system(text_mode: bool, sync_first: bool) -> Result<(), String> {
     if sync_first {
         run_pacman_sync()?;
     }
-    let spinner = util::create_spinner("Gathering stats");
-    let stats = get_stats(&config.display.stats, false, Some(&spinner));
-    spinner.finish_and_clear();
+    let spinner = if debug {
+        None
+    } else {
+        Some(util::create_spinner("Gathering stats"))
+    };
+    let stats = get_stats(&config.display.stats, debug, spinner.as_ref());
+    if let Some(s) = spinner {
+        s.finish_and_clear();
+    }
 
-    if text_mode {
+    if debug {
         crate::ui::display_stats(&stats, &config);
         println!();
     } else {
         if let Err(e) = crate::ui::display_stats_with_graphics(&stats, &config) {
-            eprintln!("Error running graphics display: {}", e);
+            eprintln!("error: {}", e);
             crate::ui::display_stats(&stats, &config);
             println!();
         }
@@ -664,7 +670,7 @@ pub fn get_stats(requested: &[StatId], debug: bool, spinner: Option<&ProgressBar
     }
 
     if debug {
-        eprintln!("TOTAL: {:?}", total_start.elapsed());
+        eprintln!("TOTAL: {:?}\n", total_start.elapsed());
     }
 
     stats
