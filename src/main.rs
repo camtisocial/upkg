@@ -6,8 +6,6 @@ mod util;
 
 use clap::{CommandFactory, Parser};
 use config::Config;
-use std::sync::mpsc;
-use std::thread;
 
 /// Display information about your package manager
 #[derive(Parser)]
@@ -22,7 +20,6 @@ Commands:
 
 Options:
   -t, --text    Text mode (no ASCII art)
-  -s, --speed   Include mirror speed test
   -d, --debug   Show debug timing information
   -h, --help    Print help
   -V, --version Print version")]
@@ -31,9 +28,6 @@ Options:
 struct Cli {
     #[arg(short, long, hide = true)]
     text: bool,
-
-    #[arg(short, long, hide = true)]
-    speed: bool,
 
     #[arg(short = 'S', hide = true)]
     sync_op: bool,
@@ -79,7 +73,6 @@ fn main() {
     }
 
     let text_mode = cli.text;
-    let speed_test = cli.speed;
 
     // Load config
     let config = Config::load();
@@ -93,7 +86,7 @@ fn main() {
     // Handle system upgrade (-Su or -Syu)
     if cli.sync_op && cli.upgrade {
         let sync_first = cli.sync_db;
-        if let Err(e) = pacman::upgrade_system(text_mode, speed_test, sync_first) {
+        if let Err(e) = pacman::upgrade_system(text_mode, sync_first) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
@@ -121,53 +114,11 @@ fn main() {
     };
 
     if text_mode {
-        if speed_test {
-            // Text mode with speed test
-            let mirror = pacman::test_mirror_health();
-            ui::display_stats(&stats, &config);
-            ui::display_mirror_health(&mirror, &stats);
-        } else {
-            // Text mode without speed test
-            ui::display_stats(&stats, &config);
-
-            // Build MirrorHealth from stats data (no speed test)
-            let mirror = if let Some(ref mirror_url) = stats.mirror_url {
-                Some(pacman::MirrorHealth {
-                    url: mirror_url.clone(),
-                    speed_mbps: None,
-                    sync_age_hours: stats.mirror_sync_age_hours,
-                })
-            } else {
-                None
-            };
-            ui::display_mirror_health(&mirror, &stats);
-        }
+        ui::display_stats(&stats, &config);
+        println!();
     } else {
-        if speed_test {
-            // Graphics mode with speed test
-            if let Some(ref mirror_url) = stats.mirror_url {
-                let mirror_url = mirror_url.clone();
-                let (progress_tx, progress_rx) = mpsc::channel();
-                let (speed_tx, speed_rx) = mpsc::channel();
-
-                thread::spawn(move || {
-                    let speed = pacman::test_mirror_speed_with_progress(&mirror_url, |progress| {
-                        let _ = progress_tx.send(progress);
-                    });
-                    let _ = speed_tx.send(speed);
-                });
-
-                if let Err(e) = ui::display_stats_with_graphics(&stats, &config, progress_rx, speed_rx) {
-                    eprintln!("Error running TUI: {}", e);
-                }
-            } else {
-                ui::display_stats(&stats, &config);
-            }
-        } else {
-            // Graphics mode without speed test (default)
-            if let Err(e) = ui::display_stats_with_graphics_no_speed(&stats, &config) {
-                eprintln!("Error running graphics display: {}", e);
-            }
+        if let Err(e) = ui::display_stats_with_graphics(&stats, &config) {
+            eprintln!("Error running graphics display: {}", e);
         }
     }
 }

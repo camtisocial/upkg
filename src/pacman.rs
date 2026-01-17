@@ -5,7 +5,6 @@ use chrono::{DateTime, FixedOffset, Local};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::process::Command;
-use std::thread;
 use std::time::Instant;
 
 // --- Public data structures ---
@@ -24,13 +23,6 @@ pub struct ManagerStats {
     pub mirror_url: Option<String>,
     pub mirror_sync_age_hours: Option<f64>,
     pub pacman_version: Option<String>,
-}
-
-#[derive(Debug)]
-pub struct MirrorHealth {
-    pub url: String,
-    pub speed_mbps: Option<f64>,
-    pub sync_age_hours: Option<f64>,
 }
 
 // --- Private data structures ---
@@ -309,54 +301,6 @@ fn get_pacman_version() -> Option<String> {
     None
 }
 
-fn test_mirror_speed_with_progress_impl<F>(mirror_url: &str, progress_callback: F) -> Option<f64>
-where
-    F: Fn(u64),
-{
-    use std::io::Read;
-
-    let test_url = format!("{}/extra/os/x86_64/extra.files", mirror_url);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .ok()?;
-
-    let start = Instant::now();
-    let mut response = client.get(&test_url).send().ok()?;
-
-    if !response.status().is_success() {
-        return None;
-    }
-
-    let total_size = response.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let mut buffer = vec![0; 8192];
-
-    loop {
-        match response.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => {
-                downloaded += n as u64;
-                if total_size > 0 {
-                    let progress = (downloaded * 100) / total_size;
-                    progress_callback(progress);
-                }
-            }
-            Err(_) => return None,
-        }
-    }
-
-    let duration = start.elapsed();
-    let seconds = duration.as_secs_f64();
-
-    if seconds > 0.0 {
-        Some(downloaded as f64 / seconds / 1_048_576.0)
-    } else {
-        None
-    }
-}
-
 fn check_mirror_sync(mirror_url: &str) -> Option<f64> {
     let lastsync_url = format!("{}/lastsync", mirror_url);
 
@@ -587,9 +531,7 @@ pub fn sync_databases() -> Result<(), String> {
     run_pacman_sync()
 }
 
-pub fn upgrade_system(text_mode: bool, speed_test: bool, sync_first: bool) -> Result<(), String> {
-    use std::sync::mpsc;
-
+pub fn upgrade_system(text_mode: bool, sync_first: bool) -> Result<(), String> {
     if !util::is_root() {
         return Err("System upgrade requires root, rerun with sudo".to_string());
     }
@@ -604,43 +546,13 @@ pub fn upgrade_system(text_mode: bool, speed_test: bool, sync_first: bool) -> Re
     spinner.finish_and_clear();
 
     if text_mode {
-        if speed_test {
-            let mirror = test_mirror_health();
-            crate::ui::display_stats(&stats, &config);
-            crate::ui::display_mirror_health(&mirror, &stats);
-        } else {
+        crate::ui::display_stats(&stats, &config);
+        println!();
+    } else {
+        if let Err(e) = crate::ui::display_stats_with_graphics(&stats, &config) {
+            eprintln!("Error running graphics display: {}", e);
             crate::ui::display_stats(&stats, &config);
             println!();
-        }
-    } else {
-        if speed_test {
-            if let Some(ref mirror_url) = stats.mirror_url {
-                let mirror_url = mirror_url.clone();
-                let (progress_tx, progress_rx) = mpsc::channel();
-                let (speed_tx, speed_rx) = mpsc::channel();
-
-                thread::spawn(move || {
-                    let speed = test_mirror_speed_with_progress(&mirror_url, |progress| {
-                        let _ = progress_tx.send(progress);
-                    });
-                    let _ = speed_tx.send(speed);
-                });
-
-                if let Err(e) =
-                    crate::ui::display_stats_with_graphics(&stats, &config, progress_rx, speed_rx)
-                {
-                    eprintln!("Error running TUI: {}", e);
-                }
-            } else {
-                crate::ui::display_stats(&stats, &config);
-                println!();
-            }
-        } else {
-            if let Err(e) = crate::ui::display_stats_with_graphics_no_speed(&stats, &config) {
-                eprintln!("Error running graphics display: {}", e);
-                crate::ui::display_stats(&stats, &config);
-                println!();
-            }
         }
     }
 
@@ -753,23 +665,4 @@ pub fn get_stats(requested: &[StatId], debug: bool) -> ManagerStats {
     }
 
     stats
-}
-
-pub fn test_mirror_speed_with_progress<F>(mirror_url: &str, progress_callback: F) -> Option<f64>
-where
-    F: Fn(u64),
-{
-    test_mirror_speed_with_progress_impl(mirror_url, progress_callback)
-}
-
-pub fn test_mirror_health() -> Option<MirrorHealth> {
-    let mirror_url = get_mirror_url()?;
-    let speed = test_mirror_speed_with_progress_impl(&mirror_url, |_| {});
-    let sync_age = check_mirror_sync(&mirror_url);
-
-    Some(MirrorHealth {
-        url: mirror_url,
-        speed_mbps: speed,
-        sync_age_hours: sync_age,
-    })
 }
