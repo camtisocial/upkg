@@ -1,8 +1,11 @@
-mod core;
-mod managers;
+mod config;
+mod pacman;
+mod stats;
 mod ui;
+mod util;
 
 use clap::{CommandFactory, Parser};
+use config::Config;
 use std::sync::mpsc;
 use std::thread;
 
@@ -78,6 +81,9 @@ fn main() {
     let text_mode = cli.text;
     let speed_test = cli.speed;
 
+    // Load config
+    let config = Config::load();
+
     let invalid_flag = (cli.sync_op && !cli.sync_db && !cli.upgrade)
         || ((cli.sync_db || cli.upgrade) && !cli.sync_op);
     if invalid_flag {
@@ -87,7 +93,7 @@ fn main() {
     // Handle system upgrade (-Su or -Syu)
     if cli.sync_op && cli.upgrade {
         let sync_first = cli.sync_db;
-        if let Err(e) = core::upgrade_system(text_mode, speed_test, sync_first) {
+        if let Err(e) = pacman::upgrade_system(text_mode, speed_test, sync_first) {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
@@ -96,20 +102,20 @@ fn main() {
 
     // Get stats
     let stats = if cli.sync_op && cli.sync_db {
-        if let Err(e) = core::sync_databases() {
+        if let Err(e) = pacman::sync_databases() {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
-        let spinner = core::create_spinner("Gathering stats");
-        let stats = core::get_manager_stats(cli.debug);
+        let spinner = util::create_spinner("Gathering stats");
+        let stats = pacman::get_stats(&config.display.stats, cli.debug);
         spinner.finish_and_clear();
         stats
     } else if text_mode || cli.debug {
         println!();
-        core::get_manager_stats(cli.debug)
+        pacman::get_stats(&config.display.stats, cli.debug)
     } else {
-        let spinner = core::create_spinner("Gathering stats");
-        let stats = core::get_manager_stats(cli.debug);
+        let spinner = util::create_spinner("Gathering stats");
+        let stats = pacman::get_stats(&config.display.stats, cli.debug);
         spinner.finish_and_clear();
         stats
     };
@@ -117,16 +123,16 @@ fn main() {
     if text_mode {
         if speed_test {
             // Text mode with speed test
-            let mirror = core::test_mirror_health();
-            ui::display_stats(&stats);
+            let mirror = pacman::test_mirror_health();
+            ui::display_stats(&stats, &config);
             ui::display_mirror_health(&mirror, &stats);
         } else {
             // Text mode without speed test
-            ui::display_stats(&stats);
+            ui::display_stats(&stats, &config);
 
             // Build MirrorHealth from stats data (no speed test)
             let mirror = if let Some(ref mirror_url) = stats.mirror_url {
-                Some(managers::MirrorHealth {
+                Some(pacman::MirrorHealth {
                     url: mirror_url.clone(),
                     speed_mbps: None,
                     sync_age_hours: stats.mirror_sync_age_hours,
@@ -145,21 +151,21 @@ fn main() {
                 let (speed_tx, speed_rx) = mpsc::channel();
 
                 thread::spawn(move || {
-                    let speed = core::test_mirror_speed_with_progress(&mirror_url, |progress| {
+                    let speed = pacman::test_mirror_speed_with_progress(&mirror_url, |progress| {
                         let _ = progress_tx.send(progress);
                     });
                     let _ = speed_tx.send(speed);
                 });
 
-                if let Err(e) = ui::display_stats_with_graphics(&stats, progress_rx, speed_rx) {
+                if let Err(e) = ui::display_stats_with_graphics(&stats, &config, progress_rx, speed_rx) {
                     eprintln!("Error running TUI: {}", e);
                 }
             } else {
-                ui::display_stats(&stats);
+                ui::display_stats(&stats, &config);
             }
         } else {
             // Graphics mode without speed test (default)
-            if let Err(e) = ui::display_stats_with_graphics_no_speed(&stats) {
+            if let Err(e) = ui::display_stats_with_graphics_no_speed(&stats, &config) {
                 eprintln!("Error running graphics display: {}", e);
             }
         }
